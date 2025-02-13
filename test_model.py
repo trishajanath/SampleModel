@@ -6,28 +6,13 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 from PIL import Image
-from torchvision import models
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.ensemble import RandomForestClassifier
-import joblib
+from torchvision import models, datasets
+from torch.utils.data import DataLoader, Dataset, random_split
 
-# ✅ Load Pretrained ResNet50 Model (Auto-download weights)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-resnet_model = models.resnet50(pretrained=True)  # ✅ Auto-download weights
-resnet_model = torch.nn.Sequential(*list(resnet_model.children())[:-1])  # Remove classification layer
-resnet_model.to(device)
-resnet_model.eval()
 
-# ✅ Define ZIP file path
-zip_file_path = "/Users/trishajanath/Desktop/archive (2).zip"
-extract_path = "BreakHis_Dataset"
 
-# ✅ Extract ZIP file
-with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-    zip_ref.extractall(extract_path)
-
-# ✅ Define tumor subtypes
 subtype_mapping = {
     "adenosis": 0,
     "fibroadenoma": 1,
@@ -39,89 +24,124 @@ subtype_mapping = {
     "papillary_carcinoma": 7
 }
 
-# ✅ Create folders for each subtype
-for subtype in subtype_mapping.keys():
-    os.makedirs(os.path.join(extract_path, subtype), exist_ok=True)
 
-# ✅ Move images to subtype folders
-for root, dirs, files in os.walk(extract_path):
-    for file in files:
-        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-            file_path = os.path.join(root, file)
-            for subtype in subtype_mapping.keys():
-                if subtype in root.lower():
-                    os.rename(file_path, os.path.join(extract_path, subtype, file))
-print("✅ Dataset organized into subtypes.")
+zip_file_path = "/Users/trishajanath/Desktop/archive (2).zip"
+extract_path = "BreakHis_Dataset"
+with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+    zip_ref.extractall(extract_path)
 
-# ✅ Image Transformation Pipeline
+
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),  # ResNet input size
-    transforms.ToTensor(),  # Convert to tensor
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # ResNet normalization
+    transforms.Resize((224, 224)),  
+    transforms.ToTensor(),  
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  
 ])
 
-# ✅ Function to extract features using ResNet50 (PyTorch)
-def extract_features(image_path):
-    try:
-        img = Image.open(image_path).convert("RGB")
-        img = transform(img).unsqueeze(0).to(device)  # Add batch dimension & send to GPU if available
 
-        with torch.no_grad():
-            features = resnet_model(img)
+class TumorDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_paths = []
+        self.labels = []
+        
+        for subtype, label in subtype_mapping.items():
+            subtype_path = os.path.join(root_dir, subtype)
+            if os.path.exists(subtype_path):
+                for file in os.listdir(subtype_path):
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        self.image_paths.append(os.path.join(subtype_path, file))
+                        self.labels.append(label)
 
-        return features.cpu().numpy().flatten()  # Move to CPU and flatten
-    except Exception as e:
-        print(f"⚠️ Error processing {image_path}: {e}")
-        return None
+    def __len__(self):
+        return len(self.image_paths)
 
-# ✅ Extract features and assign labels
-X = []
-y = []
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        label = self.labels[idx]
 
-for subtype, label in subtype_mapping.items():
-    subtype_path = os.path.join(extract_path, subtype)
-    for file in os.listdir(subtype_path):
-        file_path = os.path.join(subtype_path, file)
-        features = extract_features(file_path)
-        if features is not None:
-            X.append(features)
-            y.append(label)  # Assign the corresponding label
+        if self.transform:
+            image = self.transform(image)
 
-print("✅ Features extracted successfully.")
+        return image, label
 
-# ✅ Convert to NumPy arrays
-X = np.array(X)
-y = np.array(y)
 
-# ✅ Split dataset
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+dataset = TumorDataset(extract_path, transform=transform)
 
-# ✅ Train RandomForest model for multi-class classification
-model = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42)
-model.fit(X_train, y_train)
 
-# ✅ Evaluate model
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print(f"✅ Multi-Class Model Accuracy: {accuracy * 100:.2f}%")
+train_size = int(0.8 * len(dataset))
+test_size = len(dataset) - train_size
+train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
 
-# ✅ Save the trained model
-joblib.dump(model, "breast_cancer_multiclass.pkl")
-print("✅ Multi-Class Model saved.")
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-# ✅ Function to predict the subtype of a new image
+print(f"✅ Loaded {train_size} training samples and {test_size} testing samples.")
+
+# Classifier
+resnet_model = models.resnet50(pretrained=True)
+num_ftrs = resnet_model.fc.in_features
+resnet_model.fc = nn.Linear(num_ftrs, len(subtype_mapping))  # Adjust for 8 classes
+resnet_model.to(device)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(resnet_model.parameters(), lr=0.0001)
+
+
+num_epochs = 10
+for epoch in range(num_epochs):
+    resnet_model.train()
+    running_loss = 0.0
+
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = resnet_model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+
+    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
+
+print("✅ Training Completed!")
+
+# Eval
+resnet_model.eval()
+correct, total = 0, 0
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
+        outputs = resnet_model(images)
+        _, predicted = torch.max(outputs, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+accuracy = (correct / total) * 100
+print(f"✅ Model Accuracy: {accuracy:.2f}%")
+
+torch.save(resnet_model.state_dict(), "breast_cancer_cnn.pth")
+print("✅ CNN Model saved!")
+
+# predict
 def predict_subtype(image_path):
-    features = extract_features(image_path)
-    if features is not None:
-        features = np.array(features).reshape(1, -1)  # Reshape for single prediction
-        prediction = model.predict(features)
-        subtype = list(subtype_mapping.keys())[list(subtype_mapping.values()).index(prediction[0])]
-        return subtype
-    else:
-        return "Error processing image."
+    image = Image.open(image_path).convert("RGB")
+    image = transform(image).unsqueeze(0).to(device)
 
-# Example usage
-new_image_path = "/Users/trishajanath/Desktop/BreakHis_Dataset/Benign/SOB_B_A-14-22549AB-40-006.png"  # Replace with actual image path
+    resnet_model.eval()
+    with torch.no_grad():
+        output = resnet_model(image)
+        _, predicted_class = torch.max(output, 1)
+    
+    predicted_subtype = list(subtype_mapping.keys())[predicted_class.item()]
+    return predicted_subtype
+
+# Example Usage
+new_image_path = "/Users/trishajanath/Desktop/BreakHis_Dataset/Benign/SOB_B_A-14-22549AB-40-006.png"  
 predicted_subtype = predict_subtype(new_image_path)
 print(f"Predicted Subtype: {predicted_subtype}")
+
 
