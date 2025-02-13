@@ -1,16 +1,25 @@
 import os
 import zipfile
-from PIL import Image
 import numpy as np
+import joblib
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+from torchvision.models import resnet50, ResNet50_Weights
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.ensemble import RandomForestClassifier
-import joblib
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+resnet_model = resnet50(weights=ResNet50_Weights.DEFAULT)
+resnet_model = torch.nn.Sequential(*list(resnet_model.children())[:-1])
+resnet_model.to(device)
+resnet_model.eval()
+
 
 # ✅ Update this to the correct ZIP file path
 zip_file_path = "/Users/trishajanath/Desktop/archive (2).zip"
-
-# ✅ Define where to extract
 extract_path = "BreakHis_Dataset"
 
 # ✅ Extract ZIP file
@@ -29,11 +38,22 @@ subtype_mapping = {
     "papillary_carcinoma": 7
 }
 
-# ✅ Create folders for each subtype
+subtype_mapping = {
+    "adenosis": 0,
+    "fibroadenoma": 1,
+    "tubular_adenoma": 2,
+    "phyllodes_tumor": 3,
+    "ductal_carcinoma": 4,
+    "lobular_carcinoma": 5,
+    "mucinous_carcinoma": 6,
+    "papillary_carcinoma": 7
+}
+
+
 for subtype in subtype_mapping.keys():
     os.makedirs(os.path.join(extract_path, subtype), exist_ok=True)
 
-# ✅ Move images to subtype folders
+
 for root, dirs, files in os.walk(extract_path):
     for file in files:
         if file.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -43,19 +63,28 @@ for root, dirs, files in os.walk(extract_path):
                     os.rename(file_path, os.path.join(extract_path, subtype, file))
 print("✅ Dataset organized into subtypes.")
 
-# ✅ Function to extract image features
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),  # ResNet input size
+    transforms.ToTensor(),  # Convert to tensor
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # ResNet normalization
+])
+
+
 def extract_features(image_path):
     try:
-        image = Image.open(image_path).convert("RGB")  # Convert to RGB
-        image = image.resize((64, 64))  # ✅ Smaller image for efficiency
-        image_array = np.array(image)
-        features = image_array.flatten()  # Flatten to 1D array
-        return features
+        img = Image.open(image_path).convert("RGB")
+        img = transform(img).unsqueeze(0).to(device)  
+
+        with torch.no_grad():
+            features = resnet_model(img)
+
+        return features.cpu().numpy().flatten() 
     except Exception as e:
         print(f"⚠️ Error processing {image_path}: {e}")
         return None
 
-# ✅ Extract features and assign labels
+
 X = []
 y = []
 
@@ -78,7 +107,7 @@ y = np.array(y)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # ✅ Train RandomForest model for multi-class classification
-model = RandomForestClassifier(n_estimators=100, random_state=42)
+model = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42)
 model.fit(X_train, y_train)
 
 # ✅ Evaluate model
@@ -102,6 +131,6 @@ def predict_subtype(image_path):
         return "Error processing image."
 
 # Example usage
-new_image_path = "/Users/trishajanath/Desktop/BreakHis_Dataset/Benign/SOB_B_A-14-22549AB-40-006.png" # Replace with the path to your new image
+new_image_path = "/Users/trishajanath/Desktop/BreakHis_Dataset/Benign/SOB_B_A-14-22549AB-40-006.png"  # Replace with actual image path
 predicted_subtype = predict_subtype(new_image_path)
 print(f"Predicted Subtype: {predicted_subtype}")
