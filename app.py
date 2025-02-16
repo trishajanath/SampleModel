@@ -116,30 +116,7 @@ async def upload(file: UploadFile = File(...)):
     </html>
     """
 
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
 
-    try:
-        image = Image.open(file.file).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error opening image: {e}")
-
-    features = extract_features(image)
-    if features is None:
-        raise HTTPException(status_code=400, detail="Error extracting features")
-
-    features = np.array(features).reshape(1, -1)
-
-    # Make prediction
-    try:
-        prediction = model.predict(features)
-        predicted_subtype = list(subtype_mapping.keys())[list(subtype_mapping.values()).index(prediction[0])]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model prediction failed: {e}")
-
-    return {"predicted_subtype": predicted_subtype}
 
 # Run FastAPI
 if __name__ == "__main__":
